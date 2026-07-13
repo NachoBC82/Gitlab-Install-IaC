@@ -1,16 +1,29 @@
-
+# require:
+	# Importamos librerias ruby
+	# Es necesario importar la libreria yaml para leer el fichero de config
 require "yaml"
+# vagrant_root: Variable con ruta absoluta del fichero
 vagrant_root = File.dirname(File.expand_path(__FILE__))
+# settings: variable con la opciones de configuración
 settings = YAML.load_file "#{vagrant_root}/settings.yaml"
 
+#Zona donde obtenemos las ips necesarias
+	#IP_SECTIONS: Ip del control plane
 IP_SECTIONS = settings["network"]["control_ip"].match(/^([0-9.]+\.)([^.]+)$/)
-# First 3 octets including the trailing dot:
+	# IP_NW: 3 primeros octetos con el . del control plane
 IP_NW = IP_SECTIONS.captures[0]
-# Last octet excluding all dots:
+	# IP_START: último octeto convertido a entero
 IP_START = Integer(IP_SECTIONS.captures[1])
+	# NUM_WORKER_NODES: Cantidad de workers a crear
+	# Sirve para crear IP consecutivas
 NUM_WORKER_NODES = settings["nodes"]["workers"]["count"]
 
+# Bloque principal de configuración
 Vagrant.configure("2") do |config|
+
+	# Bloque provision: Se ejecuta en todas las maquinas los siguientes pasos:
+		# 1. Actualiza el indice de paquetes
+		# 2. Añade entradas en host para no tener que usar DNS
   config.vm.provision "shell", env: { "IP_NW" => IP_NW, "IP_START" => IP_START, "NUM_WORKER_NODES" => NUM_WORKER_NODES }, inline: <<-SHELL
       apt-get update -y
       echo "$IP_NW$((IP_START)) controlplane" >> /etc/hosts
@@ -19,6 +32,9 @@ Vagrant.configure("2") do |config|
       done
   SHELL
 
+	# Bloque de configuración para detectar la arquitectura
+		# Si la máquina host es ARM64 añade el sufijo
+		# Se configura que Vagrant compruebe versiones más recientes del box 
   if `uname -m`.strip == "aarch64"
     config.vm.box = settings["software"]["box"] + "-arm64"
   else
@@ -26,14 +42,19 @@ Vagrant.configure("2") do |config|
   end
   config.vm.box_check_update = true
 
+	# Bloque de configuración del nodo de control
   config.vm.define "controlplane" do |controlplane|
+	  # Asignación del hostname
     controlplane.vm.hostname = "controlplane"
+    # Creación de la red privada
     controlplane.vm.network "private_network", ip: settings["network"]["control_ip"]
+    # Montaje de las carpetas compartidas si existen
     if settings["shared_folders"]
       settings["shared_folders"].each do |shared_folder|
         controlplane.vm.synced_folder shared_folder["host_path"], shared_folder["vm_path"]
       end
     end
+    # Configuración del virtual box. Asignación de los recursos
     controlplane.vm.provider "virtualbox" do |vb|
         vb.cpus = settings["nodes"]["control"]["cpu"]
         vb.memory = settings["nodes"]["control"]["memory"]
@@ -41,6 +62,10 @@ Vagrant.configure("2") do |config|
           vb.customize ["modifyvm", :id, "--groups", ("/" + settings["cluster_name"])]
         end
     end
+    
+    # Configuracion a través de scripts
+	    # Se fijan variables de entorno
+	    # Ejecuta el script common.sh que es para todos los nodos
     controlplane.vm.provision "shell",
       env: {
         "DNS_SERVERS" => settings["network"]["dns_servers"].join(" "),
@@ -50,6 +75,8 @@ Vagrant.configure("2") do |config|
         "OS" => settings["software"]["os"]
       },
       path: "scripts/common.sh"
+      # Se fijan variables de entorno
+	    # Ejecuta el script master.sh que es solo para el control plane
     controlplane.vm.provision "shell",
       env: {
         "CALICO_VERSION" => settings["software"]["calico"],
@@ -60,11 +87,15 @@ Vagrant.configure("2") do |config|
       path: "scripts/master.sh"
   end
 
+	# Definición dinámica de los worker
+		# Bucle en Ruby que crea tantos workers como se haya indicado
   (1..NUM_WORKER_NODES).each do |i|
-
+		
     config.vm.define "node0#{i}" do |node|
+    # Para cada worker se le otorga un IP consecutiva a la del control plane
       node.vm.hostname = "node0#{i}"
       node.vm.network "private_network", ip: IP_NW + "#{IP_START + i}"
+    # Configuración identica a la del control plane
       if settings["shared_folders"]
         settings["shared_folders"].each do |shared_folder|
           node.vm.synced_folder shared_folder["host_path"], shared_folder["vm_path"]
@@ -86,6 +117,7 @@ Vagrant.configure("2") do |config|
           "OS" => settings["software"]["os"]
         },
         path: "scripts/common.sh"
+      # Script especifico para los workers
       node.vm.provision "shell", path: "scripts/node.sh"
 
       # Only install the dashboard after provisioning the last worker (and when enabled).
