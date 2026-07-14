@@ -18,11 +18,18 @@ IP_START = Integer(IP_SECTIONS.captures[1])
 	# NUM_WORKER_NODES: Cantidad de workers a crear
 	# Sirve para crear IP consecutivas
 NUM_WORKER_NODES = settings["nodes"]["workers"]["count"]
+
 # Rango de IPs dedicado a los nodos de PostgreSQL (fuera del clúster K8s)
 PG_IP_SECTIONS = settings["network"]["postgres_ip"].match(/^([0-9.]+\.)([^.]+)$/)
 PG_IP_NW = PG_IP_SECTIONS.captures[0]
 PG_IP_START = Integer(PG_IP_SECTIONS.captures[1])
 NUM_POSTGRES_NODES = settings["nodes"]["postgres"]["count"]
+
+# Rango de IPs dedicado a los nodos de Redis (fuera del clúster K8s)
+REDIS_IP_SECTIONS = settings["network"]["redis_ip"].match(/^([0-9.]+\.)([^.]+)$/)
+REDIS_IP_NW = REDIS_IP_SECTIONS.captures[0]
+REDIS_IP_START = Integer(REDIS_IP_SECTIONS.captures[1])
+NUM_REDIS_NODES = settings["nodes"]["redis"]["count"]
 
 # Bloque principal de configuración
 Vagrant.configure("2") do |config|
@@ -32,20 +39,31 @@ Vagrant.configure("2") do |config|
     # IPS Generales 
     "IP_NW" => IP_NW, "IP_START" => IP_START, "NUM_WORKER_NODES" => NUM_WORKER_NODES,
     # IPS Postgre     
-    "PG_IP_NW" => PG_IP_NW, "PG_IP_START" => PG_IP_START, "NUM_POSTGRES_NODES" => NUM_POSTGRES_NODES
+    "PG_IP_NW" => PG_IP_NW, "PG_IP_START" => PG_IP_START, "NUM_POSTGRES_NODES" => NUM_POSTGRES_NODES,
+    # IPS Redis
+    "REDIS_IP_NW" => REDIS_IP_NW, "REDIS_IP_START" => REDIS_IP_START, "NUM_REDIS_NODES" => NUM_REDIS_NODES
   }, inline: <<-SHELL
       #Actualizar indice de paquetes
       apt-get update -y
 
       # Añade entradas en host para no tener que usar DNS
-      echo "$IP_NW$((IP_START)) controlplane" >> /etc/hosts
+      grep -qxF "$IP_NW$((IP_START)) controlplane" /etc/hosts || \
+        echo "$IP_NW$((IP_START)) controlplane" >> /etc/hosts
       for i in `seq 1 ${NUM_WORKER_NODES}`; do
-        echo "$IP_NW$((IP_START+i)) node0${i}" >> /etc/hosts
+        line="$IP_NW$((IP_START+i)) node0${i}"
+        grep -qxF "$line" /etc/hosts || echo "$line" >> /etc/hosts
       done
 
       # Añade entradas de Postgre en Host para no tener que usar DNS
       for i in `seq 1 ${NUM_POSTGRES_NODES}`; do
-        echo "$PG_IP_NW$((PG_IP_START+i)) pg0${i}" >> /etc/hosts
+        line="$PG_IP_NW$((PG_IP_START+i)) pg0${i}"
+        grep -qxF "$line" /etc/hosts || echo "$line" >> /etc/hosts
+      done
+
+      # Añade entradas de Redis en HOST
+      for i in `seq 1 ${NUM_REDIS_NODES}`; do
+        line="$REDIS_IP_NW$((REDIS_IP_START+i)) redis0${i}"
+        grep -qxF "$line" /etc/hosts || echo "$line" >> /etc/hosts
       done
   SHELL
 
@@ -184,5 +202,33 @@ Vagrant.configure("2") do |config|
         },
         path: "scripts/postgres.sh"
     end
+  end
+
+  (1..NUM_REDIS_NODES).each do |i|
+ 
+    config.vm.define "redis0#{i}" do |redis|
+      redis.vm.hostname = "redis0#{i}"
+      redis.vm.network "private_network", ip: REDIS_IP_NW + "#{REDIS_IP_START + i}"
+      if settings["shared_folders"]
+        settings["shared_folders"].each do |shared_folder|
+          redis.vm.synced_folder shared_folder["host_path"], shared_folder["vm_path"]
+        end
+      end
+      redis.vm.provider "virtualbox" do |vb|
+          vb.cpus = settings["nodes"]["redis"]["cpu"]
+          vb.memory = settings["nodes"]["redis"]["memory"]
+          if settings["cluster_name"] and settings["cluster_name"] != ""
+            vb.customize ["modifyvm", :id, "--groups", ("/" + settings["cluster_name"] + "/database")]
+          end
+      end
+      redis.vm.provision "shell",
+        env: {
+          "DNS_SERVERS" => settings["network"]["dns_servers"].join(" "),
+          "REDIS_NODE_INDEX" => i,
+          "REDIS_TOTAL_NODES" => NUM_REDIS_NODES
+        },
+        path: "scripts/redis.sh"
+    end
+ 
   end
 end 
