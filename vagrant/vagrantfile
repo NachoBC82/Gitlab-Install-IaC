@@ -1,3 +1,4 @@
+
 # require:
 	# Importamos librerias ruby
 	# Es necesario importar la libreria yaml para leer el fichero de config
@@ -17,18 +18,34 @@ IP_START = Integer(IP_SECTIONS.captures[1])
 	# NUM_WORKER_NODES: Cantidad de workers a crear
 	# Sirve para crear IP consecutivas
 NUM_WORKER_NODES = settings["nodes"]["workers"]["count"]
+# Rango de IPs dedicado a los nodos de PostgreSQL (fuera del clúster K8s)
+PG_IP_SECTIONS = settings["network"]["postgres_ip"].match(/^([0-9.]+\.)([^.]+)$/)
+PG_IP_NW = PG_IP_SECTIONS.captures[0]
+PG_IP_START = Integer(PG_IP_SECTIONS.captures[1])
+NUM_POSTGRES_NODES = settings["nodes"]["postgres"]["count"]
 
 # Bloque principal de configuración
 Vagrant.configure("2") do |config|
 
 	# Bloque provision: Se ejecuta en todas las maquinas los siguientes pasos:
-		# 1. Actualiza el indice de paquetes
-		# 2. Añade entradas en host para no tener que usar DNS
-  config.vm.provision "shell", env: { "IP_NW" => IP_NW, "IP_START" => IP_START, "NUM_WORKER_NODES" => NUM_WORKER_NODES }, inline: <<-SHELL
+  config.vm.provision "shell", env: {
+    # IPS Generales 
+    "IP_NW" => IP_NW, "IP_START" => IP_START, "NUM_WORKER_NODES" => NUM_WORKER_NODES,
+    # IPS Postgre     
+    "PG_IP_NW" => PG_IP_NW, "PG_IP_START" => PG_IP_START, "NUM_POSTGRES_NODES" => NUM_POSTGRES_NODES
+  }, inline: <<-SHELL
+      #Actualizar indice de paquetes
       apt-get update -y
+
+      # Añade entradas en host para no tener que usar DNS
       echo "$IP_NW$((IP_START)) controlplane" >> /etc/hosts
       for i in `seq 1 ${NUM_WORKER_NODES}`; do
         echo "$IP_NW$((IP_START+i)) node0${i}" >> /etc/hosts
+      done
+
+      # Añade entradas de Postgre en Host para no tener que usar DNS
+      for i in `seq 1 ${NUM_POSTGRES_NODES}`; do
+        echo "$PG_IP_NW$((PG_IP_START+i)) pg0${i}" >> /etc/hosts
       done
   SHELL
 
@@ -92,22 +109,25 @@ Vagrant.configure("2") do |config|
   (1..NUM_WORKER_NODES).each do |i|
 		
     config.vm.define "node0#{i}" do |node|
-    # Para cada worker se le otorga un IP consecutiva a la del control plane
+      # Para cada worker se le otorga un IP consecutiva a la del control plane
       node.vm.hostname = "node0#{i}"
       node.vm.network "private_network", ip: IP_NW + "#{IP_START + i}"
-    # Configuración identica a la del control plane
+      
+      # Configuración identica a la del control plane
       if settings["shared_folders"]
         settings["shared_folders"].each do |shared_folder|
           node.vm.synced_folder shared_folder["host_path"], shared_folder["vm_path"]
         end
       end
+      
       node.vm.provider "virtualbox" do |vb|
-          vb.cpus = settings["nodes"]["workers"]["cpu"]
-          vb.memory = settings["nodes"]["workers"]["memory"]
-          if settings["cluster_name"] and settings["cluster_name"] != ""
-            vb.customize ["modifyvm", :id, "--groups", ("/" + settings["cluster_name"])]
-          end
+        vb.cpus = settings["nodes"]["workers"]["cpu"]
+        vb.memory = settings["nodes"]["workers"]["memory"]
+        if settings["cluster_name"] and settings["cluster_name"] != ""
+          vb.customize ["modifyvm", :id, "--groups", ("/" + settings["cluster_name"])]
+        end
       end
+      
       node.vm.provision "shell",
         env: {
           "DNS_SERVERS" => settings["network"]["dns_servers"].join(" "),
@@ -126,5 +146,43 @@ Vagrant.configure("2") do |config|
       end
     end
 
+  end
+
+  # --- Nodos de PostgreSQL (fuera del clúster de Kubernetes) ---
+  # estos nodos solo llevan el aprovisionamiento de scripts/postgres.sh.
+  (1..NUM_POSTGRES_NODES).each do |i|
+ 
+    config.vm.define "pg0#{i}" do |pg|
+      # Para cada worker se le otorga un IP consecutiva a la del control plane
+      pg.vm.hostname = "pg0#{i}"
+      pg.vm.network "private_network", ip: PG_IP_NW + "#{PG_IP_START + i}"
+
+      # Configuración de las carpetas compartidas
+      if settings["shared_folders"]
+        settings["shared_folders"].each do |shared_folder|
+          pg.vm.synced_folder shared_folder["host_path"], shared_folder["vm_path"]
+        end
+      end
+
+      # Provisión de recursos a la máquina concreta
+      pg.vm.provider "virtualbox" do |vb|
+        vb.cpus = settings["nodes"]["postgres"]["cpu"]
+        vb.memory = settings["nodes"]["postgres"]["memory"]
+        if settings["cluster_name"] and settings["cluster_name"] != ""
+          vb.customize ["modifyvm", :id, "--groups", ("/" + settings["cluster_name"] + "/database")]
+        end
+      end
+
+      # Instalación a través de script
+      pg.vm.provision "shell",
+        env: {
+          "DNS_SERVERS" => settings["network"]["dns_servers"].join(" "),
+          "POSTGRES_NODE_INDEX" => i,
+          "POSTGRES_TOTAL_NODES" => NUM_POSTGRES_NODES,
+          "PG_IP_NW" => PG_IP_NW,
+          "PG_IP_START" => PG_IP_START
+        },
+        path: "scripts/postgres.sh"
+    end
   end
 end 

@@ -11,6 +11,7 @@ cluster_name: Kubernetes Cluster
 network:
   # Worker IPs are simply incremented from the control IP.
   control_ip: 192.168.56.10
+  postgres_ip: 192.168.56.20
   dns_servers:
     - 8.8.8.8
     - 1.1.1.1
