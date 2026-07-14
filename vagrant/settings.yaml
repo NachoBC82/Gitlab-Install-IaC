@@ -12,6 +12,7 @@ network:
   # Worker IPs are simply incremented from the control IP.
   control_ip: 192.168.56.10
   postgres_ip: 192.168.56.20
+  redis_ip: 192.168.56.30
   dns_servers:
     - 8.8.8.8
     - 1.1.1.1
@@ -22,9 +23,21 @@ nodes:
     cpu: 2
     memory: 4096
   postgres:
+  # Postgres HA con Patroni (spec oficial GitLab, 5.000 usuarios / 100 RPS):
+  #   count: 3
+  #   cpu: 4
+  #   memory: 15360
     count: 1
     cpu: 2
     memory: 4096
+  redis:
+  # Redis HA con Patroni (spec oficial GitLab, 5.000 usuarios / 100 RPS):
+  #   count: 3
+  #   cpu: 2
+  #   memory: 7680
+    count: 1
+    cpu: 1
+    memory: 1024
   workers:
     count: 1
     cpu: 1
