@@ -1,4 +1,16 @@
-.password
+# Vagrant
+.vagrant/
 
-/.vagrant
-/.vagrant/*
+# Credenciales / secretos generados en el aprovisionamiento
+.password
+*.token
+*.key
+*.pem
+kubeadm-init.log
+
+# Kubeconfig generado (contiene certificados/credenciales del cluster)
+admin.conf
+config
+
+# Logs
+*.log
