@@ -51,3 +51,19 @@ EOF
 
 kubectl apply -f https://raw.githubusercontent.com/techiescamp/kubeadm-scripts/main/manifests/metrics-server.yaml
 
+# Install Helm (pinned version, consistent with kubernetes/calico versioning)
+
+curl -fsSL -o /tmp/helm.tar.gz "https://get.helm.sh/helm-v${HELM_VERSION}-linux-amd64.tar.gz"
+tar -zxvf /tmp/helm.tar.gz -C /tmp
+sudo mv /tmp/linux-amd64/helm /usr/local/bin/helm
+rm -rf /tmp/helm.tar.gz /tmp/linux-amd64
+
+helm version
+echo "Helm ${HELM_VERSION} installed successfully"
+
+# Add Helm repo for GitLab (as vagrant user)
+
+sudo -i -u vagrant bash << EOF
+helm repo add gitlab https://charts.gitlab.io/
+helm repo update
+EOF
