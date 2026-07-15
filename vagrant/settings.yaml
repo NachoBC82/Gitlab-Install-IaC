@@ -13,6 +13,7 @@ network:
   control_ip: 192.168.56.10
   postgres_ip: 192.168.56.20
   redis_ip: 192.168.56.30
+  minio_ip: 192.168.56.40
   dns_servers:
     - 8.8.8.8
     - 1.1.1.1
@@ -35,6 +36,16 @@ nodes:
   #   count: 3
   #   cpu: 2
   #   memory: 7680
+    count: 1
+    cpu: 1
+    memory: 1024
+  # MinIO en producción se despliega en modo distribuido con erasure coding
+  # (mínimo 4 nodos) para tolerar la caída de una máquina sin perder datos
+  # ni disponibilidad
+  #   count: 4
+  #   cpu: 2
+  #   memory: 4096
+  minio:
     count: 1
     cpu: 1
     memory: 1024
