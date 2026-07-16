@@ -1,0 +1,16 @@
+all:
+  children:
+    controlplane:
+      hosts:
+        controlplane:
+          ansible_host: 192.168.56.10
+          ansible_user: vagrant
+          ansible_ssh_private_key_file: ../vagrant/.vagrant/machines/controlplane/virtualbox/private_key
+          ansible_ssh_common_args: '-o StrictHostKeyChecking=no'
+    workers:
+      hosts:
+        worker01:
+          ansible_host: 192.168.56.11
+          ansible_user: vagrant
+          ansible_ssh_private_key_file: ../vagrant/.vagrant/machines/worker01/virtualbox/private_key
+          ansible_ssh_common_args: '-o StrictHostKeyChecking=no'

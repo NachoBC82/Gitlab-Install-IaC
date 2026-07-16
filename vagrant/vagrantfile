@@ -1,278 +1,79 @@
+# -*- mode: ruby -*-
+# vi: set ft=ruby :
 
-# require:
-	# Importamos librerias ruby
-	# Es necesario importar la libreria yaml para leer el fichero de config
 require "yaml"
-# vagrant_root: Variable con ruta absoluta del fichero
-vagrant_root = File.dirname(File.expand_path(__FILE__))
-# settings: variable con la opciones de configuración
-settings = YAML.load_file "#{vagrant_root}/settings.yaml"
 
-#Zona donde obtenemos las ips necesarias
-	#IP_SECTIONS: Ip del control plane
-IP_SECTIONS = settings["network"]["control_ip"].match(/^([0-9.]+\.)([^.]+)$/)
-	# IP_NW: 3 primeros octetos con el . del control plane
+
+# Directorio Vagrant
+vagrant_root = File.dirname(File.expand_path(__FILE__))
+settings = YAML.load_file("#{vagrant_root}/settings.yaml")
+
+# Sección de IPs
+IP_SECTIONS = settings["network"]["control_ip"].match(/^([0-9.]+.)([^.]+)$/)
 IP_NW = IP_SECTIONS.captures[0]
-	# IP_START: último octeto convertido a entero
 IP_START = Integer(IP_SECTIONS.captures[1])
-	# NUM_WORKER_NODES: Cantidad de workers a crear
-	# Sirve para crear IP consecutivas
 NUM_WORKER_NODES = settings["nodes"]["workers"]["count"]
 
-# Rango de IPs dedicado a los nodos de PostgreSQL (fuera del clúster K8s)
-PG_IP_SECTIONS = settings["network"]["postgres_ip"].match(/^([0-9.]+\.)([^.]+)$/)
-PG_IP_NW = PG_IP_SECTIONS.captures[0]
-PG_IP_START = Integer(PG_IP_SECTIONS.captures[1])
-NUM_POSTGRES_NODES = settings["nodes"]["postgres"]["count"]
-
-# Rango de IPs dedicado a los nodos de Redis (fuera del clúster K8s)
-REDIS_IP_SECTIONS = settings["network"]["redis_ip"].match(/^([0-9.]+\.)([^.]+)$/)
-REDIS_IP_NW = REDIS_IP_SECTIONS.captures[0]
-REDIS_IP_START = Integer(REDIS_IP_SECTIONS.captures[1])
-NUM_REDIS_NODES = settings["nodes"]["redis"]["count"]
-
-# Rango de IPs dedicado a los nodos de MinIO (fuera del clúster K8s)
-MINIO_IP_SECTIONS = settings["network"]["minio_ip"].match(/^([0-9.]+\.)([^.]+)$/)
-MINIO_IP_NW = MINIO_IP_SECTIONS.captures[0]
-MINIO_IP_START = Integer(MINIO_IP_SECTIONS.captures[1])
-NUM_MINIO_NODES = settings["nodes"]["minio"]["count"]
-
-# Bloque principal de configuración
+# Configuración de las máquinas Vagrant
 Vagrant.configure("2") do |config|
-
-	# Bloque provision: Se ejecuta en todas las maquinas los siguientes pasos:
-  config.vm.provision "shell", env: {
-    # IPS Generales 
-    "IP_NW" => IP_NW, "IP_START" => IP_START, "NUM_WORKER_NODES" => NUM_WORKER_NODES,
-    # IPS Postgre     
-    "PG_IP_NW" => PG_IP_NW, "PG_IP_START" => PG_IP_START, "NUM_POSTGRES_NODES" => NUM_POSTGRES_NODES,
-    # IPS Redis
-    "REDIS_IP_NW" => REDIS_IP_NW, "REDIS_IP_START" => REDIS_IP_START, "NUM_REDIS_NODES" => NUM_REDIS_NODES,
-    # IPS MinIO
-    "MINIO_IP_NW" => MINIO_IP_NW, "MINIO_IP_START" => MINIO_IP_START, "NUM_MINIO_NODES" => NUM_MINIO_NODES
-  }, inline: <<-SHELL
-      #Actualizar indice de paquetes
-      apt-get update -y
-
-      # Añade entradas en host para no tener que usar DNS
-      grep -qxF "$IP_NW$((IP_START)) controlplane" /etc/hosts || \
-        echo "$IP_NW$((IP_START)) controlplane" >> /etc/hosts
-      for i in `seq 1 ${NUM_WORKER_NODES}`; do
-        line="$IP_NW$((IP_START+i)) node0${i}"
-        grep -qxF "$line" /etc/hosts || echo "$line" >> /etc/hosts
-      done
-
-      # Añade entradas de Postgre en Host para no tener que usar DNS
-      for i in `seq 1 ${NUM_POSTGRES_NODES}`; do
-        line="$PG_IP_NW$((PG_IP_START+i)) pg0${i}"
-        grep -qxF "$line" /etc/hosts || echo "$line" >> /etc/hosts
-      done
-
-      # Añade entradas de Redis en HOST
-      for i in `seq 1 ${NUM_REDIS_NODES}`; do
-        line="$REDIS_IP_NW$((REDIS_IP_START+i)) redis0${i}"
-        grep -qxF "$line" /etc/hosts || echo "$line" >> /etc/hosts
-      done
-
-      # Añade entradas de MinIO en HOST
-      for i in `seq 1 ${NUM_MINIO_NODES}`; do
-        line="$MINIO_IP_NW$((MINIO_IP_START+i)) minio0${i}"
-        grep -qxF "$line" /etc/hosts || echo "$line" >> /etc/hosts
-      done      
-  SHELL
-
-	# Bloque de configuración para detectar la arquitectura
-		# Si la máquina host es ARM64 añade el sufijo
-		# Se configura que Vagrant compruebe versiones más recientes del box 
-  if `uname -m`.strip == "aarch64"
+  
+  # Fijando arquitecturas de las máquina en base a la máquina local
+  if RbConfig::CONFIG['host_cpu'] =~ /arm|aarch64/
     config.vm.box = settings["software"]["box"] + "-arm64"
   else
     config.vm.box = settings["software"]["box"]
   end
   config.vm.box_check_update = true
 
-	# Bloque de configuración del nodo de control
-  config.vm.define "controlplane" do |controlplane|
-	  # Asignación del hostname
-    controlplane.vm.hostname = "controlplane"
-    # Creación de la red privada
-    controlplane.vm.network "private_network", ip: settings["network"]["control_ip"]
-    # Montaje de las carpetas compartidas si existen
-    if settings["shared_folders"]
-      settings["shared_folders"].each do |shared_folder|
-        controlplane.vm.synced_folder shared_folder["host_path"], shared_folder["vm_path"]
-      end
-    end
-    # Configuración del virtual box. Asignación de los recursos
-    controlplane.vm.provider "virtualbox" do |vb|
-        vb.cpus = settings["nodes"]["control"]["cpu"]
-        vb.memory = settings["nodes"]["control"]["memory"]
-        if settings["cluster_name"] and settings["cluster_name"] != ""
-          vb.customize ["modifyvm", :id, "--groups", ("/" + settings["cluster_name"])]
-        end
-    end
+  # 1. CONTROLPLANE
+  config.vm.define "controlplane" do |control|
+    # Fijamos IP del Host
+    control.vm.hostname = "controlplane"
+    control.vm.network "private_network", ip: settings["network"]["control_ip"]
     
-    # Configuracion a través de scripts
-	    # Se fijan variables de entorno
-	    # Ejecuta el script common.sh que es para todos los nodos
-    controlplane.vm.provision "shell",
-      env: {
-        "DNS_SERVERS" => settings["network"]["dns_servers"].join(" "),
-        "ENVIRONMENT" => settings["environment"],
-        "KUBERNETES_VERSION" => settings["software"]["kubernetes"],
-        "KUBERNETES_VERSION_SHORT" => settings["software"]["kubernetes"][0..3],
-        "HELM_VERSION" => settings["software"]["helm"],
-        "OS" => settings["software"]["os"]
-      },
-      path: "scripts/common.sh"
-      # Se fijan variables de entorno
-	    # Ejecuta el script master.sh que es solo para el control plane
-    controlplane.vm.provision "shell",
-      env: {
-        "CALICO_VERSION" => settings["software"]["calico"],
-        "CONTROL_IP" => settings["network"]["control_ip"],
-        "POD_CIDR" => settings["network"]["pod_cidr"],
-        "SERVICE_CIDR" => settings["network"]["service_cidr"]
-      },
-      path: "scripts/master.sh"
-  end
-
-	# Definición dinámica de los worker
-		# Bucle en Ruby que crea tantos workers como se haya indicado
-  (1..NUM_WORKER_NODES).each do |i|
-		
-    config.vm.define "node0#{i}" do |node|
-      # Para cada worker se le otorga un IP consecutiva a la del control plane
-      node.vm.hostname = "node0#{i}"
-      node.vm.network "private_network", ip: IP_NW + "#{IP_START + i}"
-      
-      # Configuración identica a la del control plane
-      if settings["shared_folders"]
-        settings["shared_folders"].each do |shared_folder|
-          node.vm.synced_folder shared_folder["host_path"], shared_folder["vm_path"]
-        end
-      end
-      
-      node.vm.provider "virtualbox" do |vb|
-        vb.cpus = settings["nodes"]["workers"]["cpu"]
-        vb.memory = settings["nodes"]["workers"]["memory"]
-        if settings["cluster_name"] and settings["cluster_name"] != ""
-          vb.customize ["modifyvm", :id, "--groups", ("/" + settings["cluster_name"])]
-        end
-      end
-      
-      node.vm.provision "shell",
-        env: {
-          "DNS_SERVERS" => settings["network"]["dns_servers"].join(" "),
-          "ENVIRONMENT" => settings["environment"],
-          "KUBERNETES_VERSION" => settings["software"]["kubernetes"],
-          "KUBERNETES_VERSION_SHORT" => settings["software"]["kubernetes"][0..3],
-          "OS" => settings["software"]["os"]
-        },
-        path: "scripts/common.sh"
-      # Script especifico para los workers
-      node.vm.provision "shell", path: "scripts/node.sh"
-
-      # Only install the dashboard after provisioning the last worker (and when enabled).
-      if i == NUM_WORKER_NODES and settings["software"]["dashboard"] and settings["software"]["dashboard"] != ""
-        node.vm.provision "shell", path: "scripts/dashboard.sh"
+    # Fijamos carpetas compartidas por las máquinas virtuales
+    if settings["shared_folders"]
+      settings["shared_folders"].each do |sf|
+        control.vm.synced_folder sf["host_path"], sf["vm_path"]
       end
     end
 
-  end
-
-  # --- Nodos de PostgreSQL (fuera del clúster de Kubernetes) ---
-  # estos nodos solo llevan el aprovisionamiento de scripts/postgres.sh.
-  (1..NUM_POSTGRES_NODES).each do |i|
- 
-    config.vm.define "pg0#{i}" do |pg|
-      # Para cada worker se le otorga un IP consecutiva a la del control plane
-      pg.vm.hostname = "pg0#{i}"
-      pg.vm.network "private_network", ip: PG_IP_NW + "#{PG_IP_START + i}"
-
-      # Configuración de las carpetas compartidas
-      if settings["shared_folders"]
-        settings["shared_folders"].each do |shared_folder|
-          pg.vm.synced_folder shared_folder["host_path"], shared_folder["vm_path"]
-        end
+    # Fijamos recursos de la máquina virtual
+    control.vm.provider "virtualbox" do |vb|
+      vb.cpus = settings["nodes"]["control"]["cpu"]
+      vb.memory = settings["nodes"]["control"]["memory"]
+      if settings["cluster_name"] && settings["cluster_name"] != ""
+        vb.customize ["modifyvm", :id, "--groups", ("/" + settings["cluster_name"])]
       end
-
-      # Provisión de recursos a la máquina concreta
-      pg.vm.provider "virtualbox" do |vb|
-        vb.cpus = settings["nodes"]["postgres"]["cpu"]
-        vb.memory = settings["nodes"]["postgres"]["memory"]
-        if settings["cluster_name"] and settings["cluster_name"] != ""
-          vb.customize ["modifyvm", :id, "--groups", ("/" + settings["cluster_name"] + "/database")]
-        end
-      end
-
-      # Instalación a través de script
-      pg.vm.provision "shell",
-        env: {
-          "DNS_SERVERS" => settings["network"]["dns_servers"].join(" "),
-          "POSTGRES_NODE_INDEX" => i,
-          "POSTGRES_TOTAL_NODES" => NUM_POSTGRES_NODES,
-          "PG_IP_NW" => PG_IP_NW,
-          "PG_IP_START" => PG_IP_START
-        },
-        path: "scripts/postgres.sh"
     end
   end
 
-  (1..NUM_REDIS_NODES).each do |i| 
-    config.vm.define "redis0#{i}" do |redis|
-      redis.vm.hostname = "redis0#{i}"
-      redis.vm.network "private_network", ip: REDIS_IP_NW + "#{REDIS_IP_START + i}"
-      if settings["shared_folders"]
-        settings["shared_folders"].each do |shared_folder|
-          redis.vm.synced_folder shared_folder["host_path"], shared_folder["vm_path"]
-        end
-      end
-      redis.vm.provider "virtualbox" do |vb|
-          vb.cpus = settings["nodes"]["redis"]["cpu"]
-          vb.memory = settings["nodes"]["redis"]["memory"]
-          if settings["cluster_name"] and settings["cluster_name"] != ""
-            vb.customize ["modifyvm", :id, "--groups", ("/" + settings["cluster_name"] + "/database")]
+  # 2. WORKERS - Iteración por todos los worker
+  if NUM_WORKER_NODES > 0
+    (1..NUM_WORKER_NODES).each do |i|
+      config.vm.define "worker0#{i}" do |worker|
+        worker.vm.hostname = "worker0#{i}"
+        worker.vm.network "private_network", ip: IP_NW + "#{IP_START + i}"
+
+        worker.vm.provider "virtualbox" do |vb|
+          vb.cpus = settings["nodes"]["workers"]["cpu"]
+          vb.memory = settings["nodes"]["workers"]["memory"]
+          if settings["cluster_name"] && settings["cluster_name"] != ""
+            vb.customize ["modifyvm", :id, "--groups", ("/" + settings["cluster_name"] + "/workers")]
           end
-      end
-      redis.vm.provision "shell",
-        env: {
-          "DNS_SERVERS" => settings["network"]["dns_servers"].join(" "),
-          "REDIS_NODE_INDEX" => i,
-          "REDIS_TOTAL_NODES" => NUM_REDIS_NODES
-        },
-        path: "scripts/redis.sh"
-    end
- 
-  end
+        end
 
-  # --- Nodos de MinIO (almacenamiento de objetos S3 self-hosted) ---
-  # Fuera del clúster de Kubernetes; tampoco ejecutan scripts/common.sh.
-  (1..NUM_MINIO_NODES).each do |i|
- 
-    config.vm.define "minio0#{i}" do |minio|
-      minio.vm.hostname = "minio0#{i}"
-      minio.vm.network "private_network", ip: MINIO_IP_NW + "#{MINIO_IP_START + i}"
-      if settings["shared_folders"]
-        settings["shared_folders"].each do |shared_folder|
-          minio.vm.synced_folder shared_folder["host_path"], shared_folder["vm_path"]
+        # INTEGRACIÓN DE ANSIBLE:
+        # Se ejecuta solo en el último worker para garantizar que todas las máquinas estén levantadas antes
+        if i == NUM_WORKER_NODES
+          worker.vm.provision "ansible" do |ansible|
+            ansible.playbook = "../ansible/playbooks/bootstrap_k8s.yaml"
+            ansible.inventory_path = "../ansible/inventories/k8s_hosts.yaml"
+            ansible.limit = "all" # Aplica el playbook a todos los grupos definidos en el inventario
+            ansible.compatibility_mode = "2.0"
+          end
         end
       end
-      minio.vm.provider "virtualbox" do |vb|
-          vb.cpus = settings["nodes"]["minio"]["cpu"]
-          vb.memory = settings["nodes"]["minio"]["memory"]
-          if settings["cluster_name"] and settings["cluster_name"] != ""
-            vb.customize ["modifyvm", :id, "--groups", ("/" + settings["cluster_name"] + "/storage")]
-          end
-      end
-      minio.vm.provision "shell",
-        env: {
-          "DNS_SERVERS" => settings["network"]["dns_servers"].join(" "),
-          "MINIO_NODE_INDEX" => i,
-          "MINIO_TOTAL_NODES" => NUM_MINIO_NODES
-        },
-        path: "scripts/minio.sh"
     end
- 
   end
-end 
+end
