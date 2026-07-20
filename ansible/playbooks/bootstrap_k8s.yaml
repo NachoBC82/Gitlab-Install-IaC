@@ -10,5 +10,8 @@
 - name: "Paso 3: Asociación de workers al clúster"
   import_playbook: play_workers.yaml
 
-- name: "Paso 4: Configuración del nodo PostgreSQL Externo"
-  import_playbook: play_postgres.yaml
+#- name: "Paso 4: Configuración del nodo PostgreSQL Externo"
+#  import_playbook: play_postgres.yaml
+
+- name: "Paso 5: Configuración del nodo Redis Externo"
+  import_playbook: play_redis.yaml

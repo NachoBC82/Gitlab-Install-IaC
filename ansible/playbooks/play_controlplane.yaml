@@ -51,9 +51,10 @@
       set_fact:
         join_command: "{{ join_command_raw.stdout }}"
 
-    - name: Instalar Cliente postgre
+    - name: Instalar Cliente postgre y redis
       apt:
         name:
           - postgresql-client
+          - redis-tools
         state: present
         update_cache: yes

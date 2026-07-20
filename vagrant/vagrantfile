@@ -23,6 +23,10 @@ NUM_WORKER_NODES  = settings["nodes"]["workers"]["count"]
 PG_IP_START       = Integer(settings["network"]["postgres_ip"].split('.').last)
 NUM_PG_NODES      = settings["nodes"]["postgre"]["count"]
 
+# IPs de Redis
+RD_IP_START       = Integer(settings["network"]["redis_ip"].split('.').last)
+NUM_RD_NODES      = settings["nodes"]["redis"]["count"]
+
 Vagrant.configure("2") do |config|
   
   if RbConfig::CONFIG['host_cpu'] =~ /arm|aarch64/
@@ -92,7 +96,25 @@ Vagrant.configure("2") do |config|
     end
   end
 
-  # === 4. DISPARADOR DE ANSIBLE (Global e Independiente) ===
+  # === 4. NODOS REDIS ===
+  if NUM_RD_NODES > 0
+    (1..NUM_RD_NODES).each do |i|
+      config.vm.define "redis0#{i}" do |rd|
+        rd.vm.hostname = "redis0#{i}"
+        rd.vm.network "private_network", ip: IP_NW + "." + "#{RD_IP_START + (i - 1)}"
+
+        rd.vm.provider "virtualbox" do |vb|
+          vb.cpus = settings["nodes"]["redis"]["cpu"]
+          vb.memory = settings["nodes"]["redis"]["memory"]
+          if settings["cluster_name"] && settings["cluster_name"] != ""
+            vb.customize ["modifyvm", :id, "--groups", ("/" + settings["cluster_name"] + "/externals")]
+          end
+        end
+      end
+    end
+  end
+
+  # === Final. DISPARADOR DE ANSIBLE (Global e Independiente) ===
   config.vm.define "ansible_provisioner", autostart: false do |prov|
     # No necesita recursos porque no se va a crear una máquina real
     prov.vm.provider "virtualbox" do |vb|
@@ -110,7 +132,8 @@ Vagrant.configure("2") do |config|
       ansible.groups = {
         "controlplane" => (1..NUM_CONTROL_NODES).map { |c| "control0#{c}" },
         "workers"      => (1..NUM_WORKER_NODES).map  { |w| "worker0#{w}" },
-        "db_nodes"     => (1..NUM_PG_NODES).map      { |p| "postgres0#{p}" }
+        "db_nodes"     => (1..NUM_PG_NODES).map      { |p| "postgres0#{p}" },
+        "redis_nodes"  => (1..NUM_RD_NODES).map      { |r| "redis0#{r}" },
       }
     end
   end
