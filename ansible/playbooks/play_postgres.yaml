@@ -1,17 +1,22 @@
 ---
 # ansible/playbooks/play_postgres.yaml
 
-- name: "Instalación y Configuración de PostgreSQL"
+- name: "Instalación y Configuración de PostgreSQL (Fortificado)"
   hosts: db_nodes
   become: true
+
   tasks:
-    - name: Instalar PostgreSQL, dependencias y ACL (Crucial para Ansible)
+    - name: Cargar variables cifradas desde el Vault
+      include_vars:
+        file: ../../secrets/db_vars.yaml
+
+    - name: Instalar PostgreSQL, dependencias y ACL
       apt:
         name:
           - postgresql
           - postgresql-contrib
           - python3-psycopg2
-          - acl # Paquete de Listas de Control de Acceso
+          - acl
         state: present
         update_cache: yes
 
@@ -21,21 +26,35 @@
         state: started
         enabled: yes
 
-    - name: Configurar PostgreSQL para escuchar en todas las interfaces de red
+    - name: Forzar algoritmo SCRAM-SHA-256 para contraseñas
+      lineinfile:
+        path: /etc/postgresql/16/main/postgresql.conf
+        regexp: "^#?password_encryption\\s*=\\s*.*"
+        line: "password_encryption = scram-sha-256"
+      notify: Reiniciar Postgres
+
+    - name: Asegurar que SSL está explícitamente activo en el servidor
+      lineinfile:
+        path: /etc/postgresql/16/main/postgresql.conf
+        regexp: "^#?ssl\\s*=\\s*.*"
+        line: "ssl = on"
+      notify: Reiniciar Postgres
+
+    - name: Escuchar SOLO en localhost y la IP privada de la red Vagrant (eth1)
       lineinfile:
         path: /etc/postgresql/16/main/postgresql.conf
         regexp: "^#?listen_addresses\\s*=\\s*.*"
-        line: "listen_addresses = '*'"
+        # Usamos variables de Ansible para obtener la IP real de la interfaz privada dinámicamente
+        line: "listen_addresses = 'localhost, {{ ansible_eth1.ipv4.address }}'"
       notify: Reiniciar Postgres
 
-    - name: Permitir conexiones desde la subred interna en pg_hba.conf
-      postgresql_pg_hba:
-        dest: /etc/postgresql/16/main/pg_hba.conf
-        address: "192.168.56.0/24"
-        databases: all
-        method: md5
-        users: all
-        create: true
+    - name: Configurar reglas de acceso estricto y seguro en pg_hba.conf
+      blockinfile:
+        path: /etc/postgresql/16/main/pg_hba.conf
+        insertafter: EOF
+        block: |
+          # Regla de producción: Solo GitLab, solo su DB, solo con SSL y SCRAM
+          hostssl gitlabhq_production gitlab 192.168.56.0/24 scram-sha-256
       notify: Reiniciar Postgres
 
     - name: Crear base de datos para GitLab
@@ -43,11 +62,11 @@
         name: gitlabhq_production
       become_user: postgres
 
-    - name: Crear usuario de PostgreSQL para GitLab leyendo el secreto local
+    - name: Crear usuario de PostgreSQL para GitLab con contraseña cifrada (Vault)
       postgresql_user:
         db: gitlabhq_production
         name: gitlab
-        password: "{{ lookup('file', '../../secrets/postgre_gitlab.password') }}"
+        password: "{{ gitlab_db_password }}"
         priv: "ALL"
       become_user: postgres
 
