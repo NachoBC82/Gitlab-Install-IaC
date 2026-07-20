@@ -1,0 +1,58 @@
+---
+# ansible/playbooks/play_postgres.yaml
+
+- name: "Instalación y Configuración de PostgreSQL"
+  hosts: db_nodes
+  become: true
+  tasks:
+    - name: Instalar PostgreSQL, dependencias y ACL (Crucial para Ansible)
+      apt:
+        name:
+          - postgresql
+          - postgresql-contrib
+          - python3-psycopg2
+          - acl # Paquete de Listas de Control de Acceso
+        state: present
+        update_cache: yes
+
+    - name: Asegurar que PostgreSQL esté iniciado y habilitado
+      systemd:
+        name: postgresql
+        state: started
+        enabled: yes
+
+    - name: Configurar PostgreSQL para escuchar en todas las interfaces de red
+      lineinfile:
+        path: /etc/postgresql/16/main/postgresql.conf
+        regexp: "^#?listen_addresses\\s*=\\s*.*"
+        line: "listen_addresses = '*'"
+      notify: Reiniciar Postgres
+
+    - name: Permitir conexiones desde la subred interna en pg_hba.conf
+      postgresql_pg_hba:
+        dest: /etc/postgresql/16/main/pg_hba.conf
+        address: "192.168.56.0/24"
+        databases: all
+        method: md5
+        users: all
+        create: true
+      notify: Reiniciar Postgres
+
+    - name: Crear base de datos para GitLab
+      postgresql_db:
+        name: gitlabhq_production
+      become_user: postgres
+
+    - name: Crear usuario de PostgreSQL para GitLab leyendo el secreto local
+      postgresql_user:
+        db: gitlabhq_production
+        name: gitlab
+        password: "{{ lookup('file', '../../secrets/postgre_gitlab.password') }}"
+        priv: "ALL"
+      become_user: postgres
+
+  handlers:
+    - name: Reiniciar Postgres
+      systemd:
+        name: postgresql
+        state: restarted

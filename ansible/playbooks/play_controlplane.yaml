@@ -1,0 +1,59 @@
+---
+# ansible/playbooks/play_controlplane.yaml
+
+- name: "Inicialización del Nodo Controlplane"
+  hosts: controlplane
+  become: true
+  tasks:
+    - name: Inicializar el clúster con kubeadm (solo si no se ha hecho ya)
+      command: >
+        kubeadm init
+        --apiserver-advertise-address=192.168.56.10
+        --pod-network-cidr=172.16.1.0/16
+      args:
+        creates: /etc/kubernetes/admin.conf
+
+    - name: Crear directorio .kube para el usuario vagrant
+      file:
+        path: /home/vagrant/.kube
+        state: directory
+        owner: vagrant
+        group: vagrant
+        mode: '0755'
+
+    - name: Copiar admin.conf al home de vagrant
+      copy:
+        src: /etc/kubernetes/admin.conf
+        dest: /home/vagrant/.kube/config
+        remote_src: yes
+        owner: vagrant
+        group: vagrant
+        mode: '0600'
+
+    - name: Instalar operador de red Calico CNI
+      become: false
+      command: kubectl apply -f https://raw.githubusercontent.com/projectcalico/calico/v3.26.1/manifests/calico.yaml
+      args:
+        creates: /home/vagrant/.kube/.calico_installed
+      register: calico_install
+
+    - name: Marcar instalación de Calico
+      file:
+        path: /home/vagrant/.kube/.calico_installed
+        state: touch
+      when: calico_install.changed
+
+    - name: Generar comando de unión dinámico (join command)
+      command: kubeadm token create --print-join-command
+      register: join_command_raw
+
+    - name: Guardar comando de unión en un "fact" global
+      set_fact:
+        join_command: "{{ join_command_raw.stdout }}"
+
+    - name: Instalar Cliente postgre
+      apt:
+        name:
+          - postgresql-client
+        state: present
+        update_cache: yes

@@ -1,0 +1,11 @@
+---
+# ansible/playbooks/play_workers.yaml
+
+- name: "Unión de los Workers al Clúster"
+  hosts: workers
+  become: true
+  tasks:
+    - name: Unir el nodo worker al clúster (solo si no está ya unido)
+      command: "{{ hostvars[groups['controlplane'][0]]['join_command'] }}"
+      args:
+        creates: /etc/kubernetes/kubelet.conf

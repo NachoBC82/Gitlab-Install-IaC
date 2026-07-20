@@ -3,21 +3,28 @@
 
 require "yaml"
 
-
-# Directorio Vagrant
 vagrant_root = File.dirname(File.expand_path(__FILE__))
 settings = YAML.load_file("#{vagrant_root}/settings.yaml")
 
-# Sección de IPs
-IP_SECTIONS = settings["network"]["control_ip"].match(/^([0-9.]+.)([^.]+)$/)
-IP_NW = IP_SECTIONS.captures[0]
-IP_START = Integer(IP_SECTIONS.captures[1])
-NUM_WORKER_NODES = settings["nodes"]["workers"]["count"]
+# Extraemos el segmento de red (ej: "192.168.56.")
+IP_SECTIONS = settings["network"]["control_ip"].split('.')
+IP_NW = IP_SECTIONS.first(3).join('.')
 
-# Configuración de las máquinas Vagrant
+# IP de control
+CONTROL_IP_START  = Integer(settings["network"]["control_ip"].split('.').last)
+NUM_CONTROL_NODES = settings["nodes"]["control"]["count"]
+
+
+# IPs de worker
+WORKER_IP_START   = Integer(settings["network"]["worker_ip"].split('.').last)
+NUM_WORKER_NODES  = settings["nodes"]["workers"]["count"]
+
+# IPs de Postrge
+PG_IP_START       = Integer(settings["network"]["postgres_ip"].split('.').last)
+NUM_PG_NODES      = settings["nodes"]["postgre"]["count"]
+
 Vagrant.configure("2") do |config|
   
-  # Fijando arquitecturas de las máquina en base a la máquina local
   if RbConfig::CONFIG['host_cpu'] =~ /arm|aarch64/
     config.vm.box = settings["software"]["box"] + "-arm64"
   else
@@ -25,35 +32,36 @@ Vagrant.configure("2") do |config|
   end
   config.vm.box_check_update = true
 
-  # 1. CONTROLPLANE
-  config.vm.define "controlplane" do |control|
-    # Fijamos IP del Host
-    control.vm.hostname = "controlplane"
-    control.vm.network "private_network", ip: settings["network"]["control_ip"]
-    
-    # Fijamos carpetas compartidas por las máquinas virtuales
-    if settings["shared_folders"]
-      settings["shared_folders"].each do |sf|
-        control.vm.synced_folder sf["host_path"], sf["vm_path"]
-      end
-    end
+  # === 1. NODOS CONTROLPLANE ===
+  if NUM_CONTROL_NODES > 0
+    (1..NUM_CONTROL_NODES).each do |i|
+      config.vm.define "control0#{i}" do |control|
+        control.vm.hostname = "control0#{i}"
+        control.vm.network "private_network", ip: IP_NW + "." + "#{CONTROL_IP_START + (i - 1)}"
+        
+        if settings["shared_folders"]
+          settings["shared_folders"].each do |sf|
+            control.vm.synced_folder sf["host_path"], sf["vm_path"]
+          end
+        end
 
-    # Fijamos recursos de la máquina virtual
-    control.vm.provider "virtualbox" do |vb|
-      vb.cpus = settings["nodes"]["control"]["cpu"]
-      vb.memory = settings["nodes"]["control"]["memory"]
-      if settings["cluster_name"] && settings["cluster_name"] != ""
-        vb.customize ["modifyvm", :id, "--groups", ("/" + settings["cluster_name"])]
+        control.vm.provider "virtualbox" do |vb|
+          vb.cpus = settings["nodes"]["control"]["cpu"]
+          vb.memory = settings["nodes"]["control"]["memory"]
+          if settings["cluster_name"] && settings["cluster_name"] != ""
+            vb.customize ["modifyvm", :id, "--groups", ("/" + settings["cluster_name"] + "/controlplane")]
+          end
+        end
       end
     end
   end
 
-  # 2. WORKERS - Iteración por todos los worker
+  # === 2. NODOS WORKERS ===
   if NUM_WORKER_NODES > 0
     (1..NUM_WORKER_NODES).each do |i|
       config.vm.define "worker0#{i}" do |worker|
         worker.vm.hostname = "worker0#{i}"
-        worker.vm.network "private_network", ip: IP_NW + "#{IP_START + i}"
+        worker.vm.network "private_network", ip: IP_NW + "." + "#{WORKER_IP_START + (i - 1)}"
 
         worker.vm.provider "virtualbox" do |vb|
           vb.cpus = settings["nodes"]["workers"]["cpu"]
@@ -62,18 +70,47 @@ Vagrant.configure("2") do |config|
             vb.customize ["modifyvm", :id, "--groups", ("/" + settings["cluster_name"] + "/workers")]
           end
         end
+      end
+    end
+  end
 
-        # INTEGRACIÓN DE ANSIBLE:
-        # Se ejecuta solo en el último worker para garantizar que todas las máquinas estén levantadas antes
-        if i == NUM_WORKER_NODES
-          worker.vm.provision "ansible" do |ansible|
-            ansible.playbook = "../ansible/playbooks/bootstrap_k8s.yaml"
-            ansible.inventory_path = "../ansible/inventories/k8s_hosts.yaml"
-            ansible.limit = "all" # Aplica el playbook a todos los grupos definidos en el inventario
-            ansible.compatibility_mode = "2.0"
+  # === 3. NODOS POSTGRESQL ===
+  if NUM_PG_NODES > 0
+    (1..NUM_PG_NODES).each do |i|
+      config.vm.define "postgres0#{i}" do |pg|
+        pg.vm.hostname = "postgres0#{i}"
+        pg.vm.network "private_network", ip: IP_NW + "." + "#{PG_IP_START + (i - 1)}"
+
+        pg.vm.provider "virtualbox" do |vb|
+          vb.cpus = settings["nodes"]["postgre"]["cpu"]
+          vb.memory = settings["nodes"]["postgre"]["memory"]
+          if settings["cluster_name"] && settings["cluster_name"] != ""
+            vb.customize ["modifyvm", :id, "--groups", ("/" + settings["cluster_name"] + "/externals")]
           end
         end
       end
+    end
+  end
+
+  # === 4. DISPARADOR DE ANSIBLE (Global e Independiente) ===
+  config.vm.define "ansible_provisioner", autostart: false do |prov|
+    # No necesita recursos porque no se va a crear una máquina real
+    prov.vm.provider "virtualbox" do |vb|
+      vb.customize ["modifyvm", :id, "--groups", ("/" + settings["cluster_name"] + "/provisioners")] if settings["cluster_name"] != ""
+    end
+
+    # Este aprovisionador se ejecutará apuntando a todo el inventario
+    prov.vm.provision "ansible" do |ansible|
+      ansible.playbook = "../ansible/playbooks/bootstrap_k8s.yaml"
+      ansible.compatibility_mode = "2.0"
+      ansible.limit = "all"
+
+      # Mapeo dinámico completo
+      ansible.groups = {
+        "controlplane" => (1..NUM_CONTROL_NODES).map { |c| "control0#{c}" },
+        "workers"      => (1..NUM_WORKER_NODES).map  { |w| "worker0#{w}" },
+        "db_nodes"     => (1..NUM_PG_NODES).map      { |p| "postgres0#{p}" }
+      }
     end
   end
 end

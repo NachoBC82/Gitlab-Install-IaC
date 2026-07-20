@@ -2,6 +2,7 @@
 .vagrant/
 
 # Credenciales / secretos generados en el aprovisionamiento
+secrets/
 .password
 *.token
 *.key
