@@ -15,3 +15,6 @@
 
 - name: "Paso 5: Configuración del nodo Redis Externo"
   import_playbook: play_redis.yaml
+
+- name: "Paso 6: Configuración del nodo Minio Externo"
+  import_playbook: play_minio.yaml

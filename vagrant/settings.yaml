@@ -4,6 +4,7 @@ network:
   worker_ip: "192.168.56.20"
   postgres_ip: "192.168.56.30" # IP estática base para Postgres
   redis_ip: "192.168.56.40" # IP estática base para Redis
+  minio_ip: "192.168.56.50" # IP estática base para MinIO
   dns_servers:
     - 8.8.8.8
     - 1.1.1.1
@@ -23,6 +24,10 @@ nodes:
     count: 1 #3
     cpu: 1 #2
     memory: 1024 #7680 (7.5GB)
+  minio:
+    count: 1 #4
+    cpu: 2 #4
+    memory: 2048 # (8 a 16GB)
   workers:
     count: 2
     cpu: 1

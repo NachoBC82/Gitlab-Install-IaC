@@ -1,0 +1,149 @@
+---
+# ansible/playbooks/play_minio.yaml
+
+- name: "Instalación y Configuración de MinIO Externo (Almacenamiento S3)"
+  hosts: minio_nodes
+  become: true
+
+  tasks:
+    - name: Cargar variables cifradas desde el Vault
+      include_vars:
+        file: ../../secrets/db_vars.yaml
+
+    # === 1. PREPARACIÓN DEL SISTEMA Y USUARIO ===
+
+    - name: Crear grupo del sistema para MinIO
+      group:
+        name: minio
+        state: present
+        system: yes
+
+    - name: Crear usuario del sistema para MinIO
+      user:
+        name: minio
+        group: minio
+        shell: /sbin/nologin
+        system: yes
+        create_home: no
+
+    - name: Crear directorios de configuración y datos
+      file:
+        path: "{{ item }}"
+        state: directory
+        owner: minio
+        group: minio
+        mode: '0750'
+      loop:
+        - /etc/minio
+        - /mnt/minio_data
+
+    # === 2. DESCARGA E INSTALACIÓN DE BINARIOS ===
+
+    - name: Descargar el binario oficial de MinIO Server
+      get_url:
+        url: https://dl.min.io/server/minio/release/linux-amd64/minio
+        dest: /usr/local/bin/minio
+        mode: '0755'
+        owner: root
+        group: root
+
+    - name: Descargar el binario oficial de MinIO Client (mc)
+      get_url:
+        url: https://dl.min.io/client/mc/release/linux-amd64/mc
+        dest: /usr/local/bin/mc
+        mode: '0755'
+        owner: root
+        group: root
+
+    # === 3. CONFIGURACIÓN DEL ENTORNO Y SYSTEMD ===
+
+    - name: Generar archivo de entorno seguro para MinIO
+      copy:
+        dest: /etc/default/minio
+        owner: root
+        group: minio
+        mode: '0640'
+        content: |
+          # Credenciales del Administrador del Storage (Vault)
+          MINIO_ROOT_USER="{{ minio_root_user }}"
+          MINIO_ROOT_PASSWORD="{{ minio_root_password }}"
+          
+          # Directorio de volúmenes de datos
+          MINIO_VOLUMES="/mnt/minio_data"
+          
+          # Endpoint API explícito para que la consola web (9001) valide el auth en la API (9000)
+          MINIO_SERVER_URL="http://{{ ansible_eth1.ipv4.address }}:9000"
+          
+          # Opciones de escucha de red
+          MINIO_OPTS="--address {{ ansible_eth1.ipv4.address }}:9000 --console-address {{ ansible_eth1.ipv4.address }}:9001"
+      notify: Reiniciar MinIO
+
+    - name: Crear la unidad de servicio en Systemd para MinIO
+      copy:
+        dest: /etc/systemd/system/minio.service
+        owner: root
+        group: root
+        mode: '0644'
+        content: |
+          [Unit]
+          Description=MinIO Object Storage
+          Documentation=https://min.io/docs
+          Wants=network-online.target
+          After=network-online.target
+
+          [Service]
+          Type=simple
+          User=minio
+          Group=minio
+          ProtectProc=invisible
+          EnvironmentFile=/etc/default/minio
+          ExecStart=/usr/local/bin/minio server $MINIO_OPTS $MINIO_VOLUMES
+          Restart=always
+          LimitNOFILE=65536
+          TasksMax=infinity
+          TimeoutStopSec=infinity
+          SendSIGKILL=no
+
+          [Install]
+          WantedBy=multi-user.target
+      notify: Reload Systemd
+
+    - name: Forzar la ejecución inmediata de los handlers pendientes
+      meta: flush_handlers
+
+    - name: Asegurar que MinIO esté iniciado y habilitado en el arranque
+      systemd:
+        name: minio
+        state: started
+        enabled: yes
+
+    # === 4. AUTOMATIZACIÓN DE LOS BUCKETS DE GITLAB ===
+
+    - name: Configurar alias local seguro en el MinIO Client (mc)
+      shell: >
+        /usr/local/bin/mc alias set gitlab_s3
+        http://{{ ansible_eth1.ipv4.address }}:9000
+        "{{ minio_root_user }}"
+        "{{ minio_root_password }}"
+      changed_when: false
+
+    - name: Crear los buckets obligatorios exigidos por GitLab
+      shell: "/usr/local/bin/mc mb gitlab_s3/{{ item }} --ignore-existing"
+      register: mc_output
+      changed_when: "'Bucket created successfully' in mc_output.stdout"
+      loop:
+        - git-lfs
+        - artifacts
+        - uploads
+        - registry
+        - backups
+
+  handlers:
+    - name: Reload Systemd
+      systemd:
+        daemon_reload: yes
+
+    - name: Reiniciar MinIO
+      systemd:
+        name: minio
+        state: restarted
