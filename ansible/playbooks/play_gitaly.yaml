@@ -1,0 +1,86 @@
+---
+# ansible/playbooks/play_gitaly.yaml
+
+- name: "Instalación Rápida y Configuración de Gitaly (Omnibus CE)"
+  hosts: gitaly_nodes
+  become: true
+
+  tasks:
+    - name: Cargar variables cifradas desde el Vault
+      include_vars:
+        file: ../../secrets/db_vars.yaml
+
+    - name: Instalar dependencias esenciales de forma rápida
+      apt:
+        name:
+          - curl
+          - ca-certificates
+          - openssh-server
+        state: present
+        update_cache: yes
+
+    - name: Crear directorio de configuración de GitLab
+      file:
+        path: /etc/gitlab
+        state: directory
+        owner: root
+        group: root
+        mode: '0755'
+
+    - name: Pre-configurar gitlab.rb ANTES de la instalación
+      copy:
+        dest: /etc/gitlab/gitlab.rb
+        owner: root
+        group: root
+        mode: '0600'
+        content: |
+          gitlab_rails['enable'] = false
+          postgresql['enable'] = false
+          redis['enable'] = false
+          nginx['enable'] = false
+          puma['enable'] = false
+          sidekiq['enable'] = false
+          gitlab_workhorse['enable'] = false
+          prometheus_monitoring['enable'] = false
+
+          # 2. Habilitar únicamente Gitaly
+          gitaly['enable'] = true
+
+          # 3. Configuración del demonio (Sintaxis Hash nativa de GitLab 16+)
+          gitaly['configuration'] = {
+            listen_addr: '0.0.0.0:8075',
+            auth: {
+              token: '{{ gitaly_auth_token }}'
+            },
+            storage: [
+              {
+                name: 'default',
+                path: '/var/opt/gitlab/git-data'
+              }
+            ]
+          }
+
+
+    - name: Instalar paquete GitLab CE (El post-install usará la pre-configuración ligera)
+      apt:
+        deb: /vagrant/images/gitlab-ce_19.2.0-ce.0_amd64.deb
+        state: present
+
+    - name: Limpiar cachés antiguas y rastros de gitlab-ee en Chef
+      file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /opt/gitlab/embedded/cookbooks/gitlab-ee
+        - /opt/gitlab/embedded/cookbooks/cache
+
+    - name: Ejecutar reconfigure para aplicar la configuración de Gitaly
+      command: gitlab-ctl reconfigure
+      register: reconfigure_result
+      changed_when: "'gitlab Reconfigured!' in reconfigure_result.stdout"
+
+    - name: Verificar que Gitaly está corriendo correctamente
+      command: gitlab-ctl status gitaly
+      register: gitaly_status
+      failed_when: "'run: gitaly:' not in gitaly_status.stdout"
+      changed_when: false

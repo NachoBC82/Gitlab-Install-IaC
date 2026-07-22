@@ -15,3 +15,6 @@ config
 
 # Logs
 *.log
+
+# Paquetes de instalaciom
+*.deb

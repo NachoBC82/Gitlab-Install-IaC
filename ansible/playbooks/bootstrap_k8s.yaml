@@ -13,8 +13,11 @@
 #- name: "Paso 4: Configuración del nodo PostgreSQL Externo"
 #  import_playbook: play_postgres.yaml
 
-- name: "Paso 5: Configuración del nodo Redis Externo"
-  import_playbook: play_redis.yaml
+#- name: "Paso 5: Configuración del nodo Redis Externo"
+#  import_playbook: play_redis.yaml
 
-- name: "Paso 6: Configuración del nodo Minio Externo"
-  import_playbook: play_minio.yaml
+#- name: "Paso 6: Configuración del nodo Minio Externo"
+#  import_playbook: play_minio.yaml
+
+- name: "Paso 7: Configuración del nodo Gitaly Externo"
+  import_playbook: play_gitaly.yaml
